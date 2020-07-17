@@ -1,0 +1,68 @@
+version: "3.3"
+
+services:
+  redis:
+    image: redis:alpine
+    container_name: ${REDIS_HOST}
+    ports:
+      - "${REDIS_PORT}:${REDIS_PORT}"
+    volumes:
+      - $PWD/redis-data:/var/lib/redis
+      - $PWD/redis.conf:/usr/local/etc/redis/redis.conf
+    environment:
+      - REDIS_PASS=${REDIS_PASSWORD}
+      - REDIS_APPENDONLY=yes
+    networks:
+      - my-go-app-network
+
+  zookeeper:
+    image: wurstmeister/zookeeper
+    container_name: zookeeper
+    ports:
+      - "${ZOOKEEPER_PORT}:${ZOOKEEPER_PORT}"
+    networks:
+      - my-go-app-network
+  
+  kafka:
+    image: wurstmeister/kafka
+    container_name: ${KAFKA_HOST}
+    ports:
+      - "${KAFKA_PORT}:${KAFKA_PORT}"
+    environment:
+      #KAFKA_ADVERTISED_HOST_NAME: localhost
+      HOSTNAME_COMMAND: curl http://169.254.169.254/latest/meta-data/public-ipv4
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://:${KAFKA_INTERNAL_PORT},EXTERNAL://_{HOSTNAME_COMMAND}:${KAFKA_PORT}
+      KAFKA_LISTENERS: INTERNAL://:${KAFKA_INTERNAL_PORT},EXTERNAL://:${KAFKA_PORT}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CREATE_TOPICS: "${KAFKA_TOPIC}"
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:${ZOOKEEPER_PORT}
+    volumes:
+      - $PWD/kafka-data:/var/lib/kafka/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - my-go-app-network
+    depends_on:
+      - zookeeper
+
+  # Build the Dockerfile presemt in the current directory which runs our application container on the 
+  # HTTP_SERVER_PORT mentioned in the .env file
+  my-go-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: my-go-app
+    container_name: my-go-app
+    ports:
+      - "${HTTP_SERVER_PORT}:${HTTP_SERVER_PORT}"
+    networks:
+      - my-go-app-network
+    depends_on:
+      - redis
+      - zookeeper
+      - kafka
+
+
+# Simple Bridge network for the Redis, Kafka and Go App containers
+networks:
+  my-go-app-network:

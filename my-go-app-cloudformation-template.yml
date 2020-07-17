@@ -1,0 +1,162 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Deploy a service into an ECS cluster behind a public load balancer.
+Parameters:
+  LoadBalancerSubnetAZ1:
+    Description: Load balancer subnet 1
+    Type: 'AWS::EC2::Subnet::Id'
+  LoadBalancerSubnetAZ2:
+    Description: Load balancer subnet 2 (belonging to a different AZ)
+    Type: 'AWS::EC2::Subnet::Id'
+  LoadBalancerSecurityGroup:
+    Description: Security group for the load balancer
+    Type: 'AWS::EC2::SecurityGroup::Id'
+  LoadBalancerListenerPort:
+    Description: The port on which the load balancer is listening.
+    Type: Number
+    Default: 8080
+  VpcId:
+    Description: The ID of the VPC in which the target group will be created
+    Type: 'AWS::EC2::VPC::Id'
+  Path:
+    Description: >-
+      A path on the public load balancer that this service should be connected
+      to. Use * to send all load balancer traffic to this service.
+    Type: String
+    Default: '*'
+  Priority:
+    Description: >-
+      The priority for the routing rule added to the load balancer. This only
+      applies if your have multiple services which have been assigned to
+      different paths on the load balancer.
+    Type: Number
+    Default: 1
+  ClusterName:
+    Description: ClusterName
+    Type: String
+  ServiceName:
+    Description: A name for the service
+    Type: String
+    Default: my-go-app-container
+  ImageUrl:
+    Type: String
+    Default: >-
+      ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/<repository-name>:latest
+    Description: >-
+      The url of a docker image that contains the application process that will
+      handle the traffic for this service
+  ContainerCpu:
+    Description: How much CPU to give the container. 1024 is 1 CPU
+    Type: Number
+    Default: 256
+  ContainerMemory:
+    Description: How much memory in megabytes to give the container
+    Type: Number
+    Default: 512
+  ContainerPort:
+    Description: What port number the application inside the docker container is binding to
+    Type: Number
+    Default: 8080
+
+Resources:
+  # The cluster. Logical grouping of tasks or services
+  ECSCluster:
+    Type: 'AWS::ECS::Cluster'
+    Properties:
+      ClusterName: !Ref ClusterName
+
+  # The service. The service is a resource that runs and maintains the requested number of tasks
+  # and associated load balancers.
+  GoAppService:
+    Type: 'AWS::ECS::Service'
+    Properties:
+      Cluster: !Ref ECSCluster
+      LaunchType: EC2
+      DesiredCount: 1
+      TaskDefinition: !Ref TaskDefinition
+      SchedulingStrategy: DAEMON
+      LoadBalancers:
+        - ContainerName: !Ref ServiceName
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+          
+  # The task definition. This is a simple metadata description of what
+  # container to run, and what resource requirements it requires.
+  # It is assumed that ECS has sufficient access to pull the Docker image
+  TaskDefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      Family: !Ref ServiceName
+      Cpu: !Ref ContainerCpu
+      Memory: !Ref ContainerMemory
+      ContainerDefinitions:
+        - Name: !Ref ServiceName
+          Cpu: !Ref ContainerCpu
+          Memory: !Ref ContainerMemory
+          Image: !Ref ImageUrl
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+
+  # Create an internet-facing application load balancer
+  LoadBalancer:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      IpAddressType: ipv4
+      Name: !Join 
+        - ''
+        - - !Ref ServiceName
+          - '-loadbalancer'
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+      Subnets:
+        - !Ref LoadBalancerSubnetAZ1
+        - !Ref LoadBalancerSubnetAZ2
+      Type: application
+
+  # Create a listener on the load balancer that checks for connection requests on the 
+  # specified listener port using protocol HTTP 
+  Listener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: !Ref LoadBalancerListenerPort
+      Protocol: HTTP
+
+  # Create a rule on the listener for routing traffic to the target group
+  LoadBalancerRule:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      Actions:
+        - TargetGroupArn: !Ref TargetGroup
+          Type: forward
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - !Ref Path
+      ListenerArn: !Ref Listener
+      Priority: !Ref Priority
+  
+  # A target group. This is used for keeping track of all the tasks, and
+  # what IP addresses / port numbers they have. This target group is
+  # connected to an application load balancer so
+  # it can automatically distribute traffic across all the targets running the 
+  # application containers
+  TargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      HealthCheckIntervalSeconds: 6
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: !Join 
+        - ''
+        - - !Ref ServiceName
+          - '-targetgroup'
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref VpcId

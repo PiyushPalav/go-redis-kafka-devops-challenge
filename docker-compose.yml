@@ -51,7 +51,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: my-go-app
+    image: ${PRIVATE_REGISTRY}/my-go-app
     container_name: my-go-app
     ports:
       - "${HTTP_SERVER_PORT}:${HTTP_SERVER_PORT}"
